@@ -298,7 +298,7 @@ pub struct TArray<T> {
     max: i32,
 }
 impl<T> TArray<T> {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             data: std::ptr::null(),
             num: 0,
