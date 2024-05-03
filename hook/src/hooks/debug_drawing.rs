@@ -15,6 +15,10 @@ pub fn hooks() -> &'static [(&'static str, ExecFn)] {
             exec_draw_debug_line as ExecFn,
         ),
         (
+            "/Script/Engine.KismetSystemLibrary:DrawDebugPoint",
+            exec_draw_debug_point as ExecFn,
+        ),
+        (
             "/Script/Engine.KismetSystemLibrary:DrawDebugCircle",
             exec_draw_debug_circle as ExecFn,
         ),
@@ -47,8 +51,8 @@ pub fn hooks() -> &'static [(&'static str, ExecFn)] {
             exec_tick as ExecFn,
         ),
         (
-            "/Game/_AssemblyStorm/TestMod/MintDebugStuff/InitCave.InitCave_C:GetVertices",
-            exec_debug_mesh as ExecFn,
+            "/Game/_mint/BPL_CSG.BPL_CSG_C:Get Procedural Mesh Vertices",
+            exec_get_mesh_vertices as ExecFn,
         ),
     ]
 }
@@ -239,6 +243,30 @@ unsafe extern "system" fn exec_draw_debug_line(
         let batcher = element_ptr!(world => .line_batcher.*).nn().unwrap();
         let f = element_ptr!(batcher => .vftable.*.draw_line.*);
         f(batcher, &start, &end, &color, 0, thickness, duration);
+    }
+
+    if !stack.code.is_null() {
+        stack.code = stack.code.add(1);
+    }
+}
+
+unsafe extern "system" fn exec_draw_debug_point(
+    _context: *mut ue::UObject,
+    stack: *mut ue::kismet::FFrame,
+    _result: *mut c_void,
+) {
+    let stack = stack.as_mut().unwrap();
+
+    let world_context: Option<NonNull<ue::UObject>> = arg(stack);
+    let position: FVector = arg(stack);
+    let size: f32 = arg(stack);
+    let color: FLinearColor = arg(stack);
+    let duration: f32 = arg(stack);
+
+    if let Some(world) = get_world(world_context) {
+        let batcher = element_ptr!(world => .line_batcher.*).nn().unwrap();
+        let f = element_ptr!(batcher => .vftable.*.draw_point.*);
+        f(batcher, &position, &color, size, 0, duration);
     }
 
     if !stack.code.is_null() {
@@ -1072,75 +1100,41 @@ mod physx {
     }
 }
 
-unsafe extern "system" fn exec_debug_mesh(
-    context: *mut ue::UObject,
+unsafe extern "system" fn exec_get_mesh_vertices(
+    _context: *mut ue::UObject,
     stack: *mut ue::kismet::FFrame,
     _result: *mut c_void,
 ) {
     let stack = stack.as_mut().unwrap();
 
     let mesh: Option<NonNull<UDeepProceduralMeshComponent>> = arg(stack);
-
-    let mut ret: TArray<FVector> = Default::default();
+    let _world_context: Option<NonNull<UObject>> = arg(stack);
 
     stack.most_recent_property_address = std::ptr::null();
-    ue::kismet::arg(stack, &mut ret);
-    let ret_address = (stack.most_recent_property_address as *mut TArray<FVector>)
+    ue::kismet::arg(stack, &mut TArray::<FVector>::default());
+    let ret = (stack.most_recent_property_address as *mut TArray<FVector>)
         .as_mut()
         .unwrap();
 
-    ret_address.clear();
+    ret.clear();
 
-    //let ret: &mut TArray<FVector> = arg(stack);
+    if let Some(mesh) = mesh {
+        if let Some(triangle_mesh) = element_ptr!(mesh => .triangle_mesh.*).nn() {
+            let num = element_ptr!(triangle_mesh => .vftable.*.get_nb_vertices.*)(triangle_mesh);
+            let ptr = element_ptr!(triangle_mesh => .vftable.*.get_vertices.*)(triangle_mesh);
+            let slice = std::slice::from_raw_parts(ptr, num as usize);
+            let c = element_ptr!(mesh => .chunk_id.*);
 
-    //let mut ret = TArray::new();
-
-    if let Some(world) = get_world(context.nn()) {
-        if let Some(mesh) = mesh {
-            if let Some(triangle_mesh) = element_ptr!(mesh => .triangle_mesh.*).nn() {
-                let num =
-                    element_ptr!(triangle_mesh => .vftable.*.get_nb_vertices.*)(triangle_mesh);
-                let ptr = element_ptr!(triangle_mesh => .vftable.*.get_vertices.*)(triangle_mesh);
-                let slice = std::slice::from_raw_parts(ptr, num as usize);
-                //ret.extend_from_slice(slice);
-                let c = element_ptr!(mesh => .chunk_id.*);
-
-                let mut points = vec![];
-                let mut lines = vec![];
-                for vert in slice {
-                    let position = FVector::new(
-                        c.x as f32 * 800. + vert.x,
-                        c.y as f32 * 800. + vert.y,
-                        c.z as f32 * 800. + vert.z,
-                    );
-                    ret_address.push(position);
-                    //nav::draw_box(
-                    //    &mut lines,
-                    //    position,
-                    //    FVector::new(20., 20., 20.),
-                    //    FLinearColor::new(0., 0., 1., 1.),
-                    //);
-                    //points.push(FBatchedPoint {
-                    //    position: FVector::new(
-                    //        c.x as f32 * 800. + vert.x,
-                    //        c.y as f32 * 800. + vert.y,
-                    //        c.z as f32 * 800. + vert.z,
-                    //    ),
-                    //    color: FLinearColor::new(0., 0., 1., 1.),
-                    //    point_size: 40.,
-                    //    remaining_life_time: 0.,
-                    //    depth_priority: 0,
-                    //})
-                }
-
-                let batcher = element_ptr!(world => .line_batcher.*).nn().unwrap();
-                draw_points(batcher, &points);
-                draw_lines(batcher, &lines);
+            for vert in slice {
+                let position = FVector::new(
+                    c.x as f32 * 800. + vert.x,
+                    c.y as f32 * 800. + vert.y,
+                    c.z as f32 * 800. + vert.z,
+                );
+                ret.push(position);
             }
         }
     }
-
-    std::mem::forget(ret);
 
     if !stack.code.is_null() {
         stack.code = stack.code.add(1);
