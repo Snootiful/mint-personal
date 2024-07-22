@@ -1,3 +1,4 @@
+mod file;
 mod network;
 
 use anyhow::{Context, Result};
@@ -8,9 +9,10 @@ use std::sync::{Mutex, OnceLock};
 use crate::globals;
 use crate::ue::{FString, TArray};
 
-use self::network::{FStreamingNetworkPlatformFile, NetworkPakConfig};
+use self::file::{PlainFileProvider, PlainFileProviderConfig};
+use self::network::{EditorNetworkConfig, EditorNetworkFileProvider};
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct FileInfo {
     pub file_exists: bool,
     pub read_only: bool,
@@ -20,11 +22,10 @@ pub struct FileInfo {
 }
 
 #[derive(Debug, Default, serde::Deserialize)]
-struct PakConfig {
-    #[serde(flatten)]
-    network: NetworkPakConfig,
+struct FileProviderConfig {
+    layers: Vec<LayerConfig>,
 }
-impl PakConfig {
+impl FileProviderConfig {
     fn new() -> Result<Self> {
         Ok(serde_json::from_slice(&std::fs::read(
             globals()
@@ -34,6 +35,13 @@ impl PakConfig {
                 .join("cook-server.json"),
         )?)?)
     }
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(tag = "type")]
+enum LayerConfig {
+    File(PlainFileProviderConfig),
+    EditorNetwork(EditorNetworkConfig),
 }
 
 #[repr(C)]
@@ -135,8 +143,7 @@ mod test {
     fn test_connect() -> Result<()> {
         println!("Hello, world!");
 
-        let mut pak = FStreamingNetworkPlatformFile::new(PakConfig::default().network)?;
-        pak.init()?;
+        let mut pak = EditorNetworkFileProvider::new(FileProviderConfig::default().network)?;
 
         let list = [
             "../../../FSD/Content/_AssemblyStorm/TestMod/Pause/InitSpacerig.uexp",
@@ -292,17 +299,52 @@ const VTABLE_NAMES: &[(*const (), &str)] = &[
     (hook_virt_n::<54> as *const (), "SetCreatePublicFiles"),
 ];
 
-static NET_PAK: OnceLock<Mutex<FStreamingNetworkPlatformFile>> = OnceLock::new();
-fn net_pak() -> &'static Mutex<FStreamingNetworkPlatformFile> {
+struct LayeredFileProvider {
+    layers: Vec<Box<dyn FileProvider>>,
+}
+impl LayeredFileProvider {
+    fn new(config: FileProviderConfig) -> Result<Self> {
+        let mut layers: Vec<Box<dyn FileProvider>> = vec![];
+
+        for l in config.layers {
+            layers.push(match l {
+                LayerConfig::File(c) => Box::new(PlainFileProvider::new(c)?),
+                LayerConfig::EditorNetwork(c) => Box::new(EditorNetworkFileProvider::new(c)?),
+            })
+        }
+
+        Ok(Self { layers })
+    }
+}
+impl FileProvider for LayeredFileProvider {
+    fn matches(&self, path: &str) -> bool {
+        self.layers.iter().any(|l| l.matches(path))
+    }
+    fn get_file_info(&mut self, path: &str) -> Result<FileInfo> {
+        self.layers
+            .iter_mut()
+            .find_map(|l| l.matches(path).then(|| l.get_file_info(path)))
+            .unwrap()
+    }
+    fn get_file(&mut self, path: &str) -> Result<Vec<u8>> {
+        self.layers
+            .iter_mut()
+            .find_map(|l| l.matches(path).then(|| l.get_file(path)))
+            .unwrap()
+    }
+}
+
+static NET_PAK: OnceLock<Mutex<LayeredFileProvider>> = OnceLock::new();
+fn net_pak() -> &'static Mutex<LayeredFileProvider> {
     NET_PAK.get_or_init(|| {
-        let config = PakConfig::new().unwrap_or_else(|e| {
+        let config = FileProviderConfig::new().unwrap_or_else(|e| {
             tracing::warn!("Failed to load cook-server.json: {e}");
-            PakConfig::default()
+            FileProviderConfig::default()
         });
         tracing::info!("Using cook server config: {config:#?}");
 
         Mutex::new(
-            FStreamingNetworkPlatformFile::new(config.network)
+            LayeredFileProvider::new(config)
                 .expect("failed to create FStreamingNetworkPlatformFile"),
         )
     })
@@ -312,6 +354,12 @@ static mut VTABLE_ORIG: *const FPakVTable = std::ptr::null();
 static mut VTABLE_HOOKED: FPakVTable = FPakVTable([None; 55]);
 
 type CursorFileHandle = IFileHandle<std::io::Cursor<Vec<u8>>>;
+
+pub trait FileProvider: Send + Sync {
+    fn matches(&self, path: &str) -> bool;
+    fn get_file_info(&mut self, path: &str) -> Result<FileInfo>;
+    fn get_file(&mut self, path: &str) -> Result<Vec<u8>>;
+}
 
 type FnFileExists =
     unsafe extern "system" fn(this: *mut FPakPlatformFile, file_name: *const u16) -> bool;
@@ -326,16 +374,15 @@ unsafe extern "system" fn hook_file_exists(
     let mut lock = net_pak().lock();
     let pak = lock.as_mut().unwrap();
 
-    if name
-        .strip_prefix("../../../")
-        .map(|p| pak.matches(p))
-        .unwrap_or_default()
-    {
-        return pak
-            .get_file_info(&name)
-            .expect("failed to get file info {name}")
-            .file_exists;
+    if let Some(name) = name.strip_prefix("../../../") {
+        if pak.matches(name) {
+            return pak
+                .get_file_info(name)
+                .expect("failed to get file info {name}")
+                .file_exists;
+        }
     }
+
     std::mem::transmute::<_, FnFileExists>((*VTABLE_ORIG).0[14].unwrap())(this, file_name)
 }
 
@@ -352,15 +399,13 @@ unsafe extern "system" fn hook_file_size(
     let mut lock = net_pak().lock();
     let pak = lock.as_mut().unwrap();
 
-    if name
-        .strip_prefix("../../../")
-        .map(|p| pak.matches(p))
-        .unwrap_or_default()
-    {
-        return pak
-            .get_file_info(&name)
-            .expect("failed to get file info {name}")
-            .size;
+    if let Some(name) = name.strip_prefix("../../../") {
+        if pak.matches(name) {
+            return pak
+                .get_file_info(name)
+                .expect("failed to get file info {name}")
+                .size;
+        }
     }
     std::mem::transmute::<_, FnFileSize>((*VTABLE_ORIG).0[15].unwrap())(this, file_name)
 }
@@ -382,14 +427,12 @@ unsafe extern "system" fn hook_open_read(
     let mut lock = net_pak().lock();
     let pak = lock.as_mut().unwrap();
 
-    if name
-        .strip_prefix("../../../")
-        .map(|p| pak.matches(p))
-        .unwrap_or_default()
-    {
-        tracing::info!("Fetching file from editor {name}");
-        let data = pak.get_file(&name).expect("failed to get file {name}");
-        return Box::into_raw(Box::new(CursorFileHandle::new(std::io::Cursor::new(data))));
+    if let Some(name) = name.strip_prefix("../../../") {
+        if pak.matches(name) {
+            tracing::info!("Fetching file from editor {name}");
+            let data = pak.get_file(name).expect("failed to get file {name}");
+            return Box::into_raw(Box::new(CursorFileHandle::new(std::io::Cursor::new(data))));
+        }
     }
     std::mem::transmute::<_, FnHookOpenRead>((*VTABLE_ORIG).0[24].unwrap())(
         this,
@@ -404,9 +447,9 @@ unsafe extern "system" fn hook_open_async_read(
     this: *mut FPakPlatformFile,
     file_name: *const u16,
 ) -> *mut () {
-    let name = widestring::U16CStr::from_ptr_str(file_name)
-        .to_string()
-        .unwrap();
+    //let name = widestring::U16CStr::from_ptr_str(file_name)
+    //    .to_string()
+    //    .unwrap();
     //tracing::info!("OpenAsyncRead({name})");
     std::mem::transmute::<_, FnHookOpenAsyncRead>((*VTABLE_ORIG).0[35].unwrap())(this, file_name)
 }
@@ -453,10 +496,6 @@ pub unsafe fn init() -> Result<()> {
         },
     )?;
     FPakPlatformFileInitialize.enable()?;
-
-    let mut lock = net_pak().lock();
-    let pak = lock.as_mut().unwrap();
-    pak.init().expect("failed to init net pak");
 
     Ok(())
 }

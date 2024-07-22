@@ -6,20 +6,20 @@ use std::{
 use anyhow::{bail, Result};
 use byteorder::{ReadBytesExt, WriteBytesExt, LE};
 
-use super::FileInfo;
+use super::{FileInfo, FileProvider};
 
 fn default_host() -> String {
     "127.0.0.1:41899".to_string()
 }
 
 #[derive(Debug, serde::Deserialize)]
-pub struct NetworkPakConfig {
+pub struct EditorNetworkConfig {
     #[serde(default = "default_host")]
     host: String,
     platform: String,
     globs: Vec<String>,
 }
-impl Default for NetworkPakConfig {
+impl Default for EditorNetworkConfig {
     fn default() -> Self {
         Self {
             host: default_host(),
@@ -29,20 +29,20 @@ impl Default for NetworkPakConfig {
     }
 }
 
-pub struct FStreamingNetworkPlatformFile {
+pub struct EditorNetworkFileProvider {
     input: BufReader<TcpStream>,
     output: BufWriter<TcpStream>,
     pub file_list: Vec<FileEntry>,
-    config: NetworkPakConfig,
+    config: EditorNetworkConfig,
     globs: Vec<glob::Pattern>,
 }
-impl FStreamingNetworkPlatformFile {
-    pub fn new(config: NetworkPakConfig) -> Result<Self> {
+impl EditorNetworkFileProvider {
+    pub fn new(config: EditorNetworkConfig) -> Result<Self> {
         let conn = TcpStream::connect(&config.host)?;
         let input = BufReader::new(conn.try_clone()?);
         let output = BufWriter::new(conn);
 
-        Ok(Self {
+        let mut new = Self {
             input,
             output,
             file_list: vec![],
@@ -52,9 +52,13 @@ impl FStreamingNetworkPlatformFile {
                 .flat_map(|g| glob::Pattern::new(g))
                 .collect(),
             config,
-        })
+        };
+
+        new.init()?;
+
+        Ok(new)
     }
-    pub fn init(&mut self) -> Result<()> {
+    fn init(&mut self) -> Result<()> {
         let msg = Message::GetFileList(Box::new(MessageGetFileList {
             platforms: vec![self.config.platform.to_string()],
             game_name: "../../../FSD/FSD.uproject".to_owned(),
@@ -81,11 +85,16 @@ impl FStreamingNetworkPlatformFile {
 
         Ok(())
     }
-    pub fn get_file_info(&mut self, path: &str) -> Result<FileInfo> {
+}
+impl FileProvider for EditorNetworkFileProvider {
+    fn matches(&self, path: &str) -> bool {
+        self.globs.iter().any(|g| g.matches(path))
+    }
+    fn get_file_info(&mut self, path: &str) -> Result<FileInfo> {
         write_message(
             &mut self.output,
             &Message::GetFileInfo(MessageFileInfo {
-                file_name: path.to_string(),
+                file_name: format!("../../../{path}"),
             }),
         )?;
         let mut reply = Cursor::new(read_payload(&mut self.input)?);
@@ -97,16 +106,16 @@ impl FStreamingNetworkPlatformFile {
             access_timestamp: reply.read_u64::<LE>()?,
         })
     }
-    pub fn get_file(&mut self, path: &str) -> Result<Vec<u8>> {
+    fn get_file(&mut self, path: &str) -> Result<Vec<u8>> {
         write_message(
             &mut self.output,
             &Message::OpenRead(MessageOpenRead {
-                filename: path.to_string(),
+                filename: format!("../../../{path}"),
             }),
         )?;
         let mut reply = Cursor::new(read_payload(&mut self.input)?);
         let handle_id = reply.read_u64::<LE>()?;
-        let timestamp = reply.read_u64::<LE>()?;
+        let _timestamp = reply.read_u64::<LE>()?;
         let file_size = reply.read_u64::<LE>()?;
 
         //tracing::info!("file handle {}", handle_id);
@@ -128,9 +137,6 @@ impl FStreamingNetworkPlatformFile {
         let rest = reply.into_inner();
 
         Ok(rest[8..rest.len()].to_vec())
-    }
-    pub fn matches(&self, path: &str) -> bool {
-        self.globs.iter().any(|g| g.matches(path))
     }
 }
 
