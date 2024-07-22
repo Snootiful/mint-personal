@@ -10,8 +10,8 @@ use std::sync::{Mutex, OnceLock};
 use crate::globals;
 use crate::ue::{FString, TArray};
 
-use self::file::{PlainFileProvider, PlainFileProviderConfig};
-use self::network::{EditorNetworkConfig, EditorNetworkFileProvider};
+use self::file::PlainFileProviderConfig;
+use self::network::EditorNetworkConfig;
 
 #[derive(Debug, Default)]
 pub struct FileInfo {
@@ -54,6 +54,17 @@ struct LayerConfigEntry {
 enum LayerConfig {
     File(PlainFileProviderConfig),
     EditorNetwork(EditorNetworkConfig),
+}
+impl LayerConfig {
+    fn build(self) -> Result<Box<dyn FileProvider>> {
+        fn map(p: Result<impl FileProvider + 'static>) -> Result<Box<dyn FileProvider>> {
+            p.map(|p| Box::new(p) as Box<dyn FileProvider>)
+        }
+        match self {
+            LayerConfig::File(c) => map(c.build()),
+            LayerConfig::EditorNetwork(c) => map(c.build()),
+        }
+    }
 }
 
 #[repr(C)]
@@ -320,10 +331,7 @@ impl LayeredFileProvider {
 
         for l in config.layers {
             if l.enable {
-                layers.push(match l.config {
-                    LayerConfig::File(c) => Box::new(PlainFileProvider::new(c)?),
-                    LayerConfig::EditorNetwork(c) => Box::new(EditorNetworkFileProvider::new(c)?),
-                })
+                layers.push(l.config.build()?);
             }
         }
 

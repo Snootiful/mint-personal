@@ -10,6 +10,11 @@ pub struct PlainFileProviderConfig {
     path: PathBuf,
     globs: Vec<String>,
 }
+impl PlainFileProviderConfig {
+    pub fn build(self) -> Result<PlainFileProvider> {
+        PlainFileProvider::new(self)
+    }
+}
 
 pub struct PlainFileProvider {
     path: PathBuf,

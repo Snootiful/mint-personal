@@ -29,6 +29,11 @@ impl Default for EditorNetworkConfig {
         }
     }
 }
+impl EditorNetworkConfig {
+    pub fn build(self) -> Result<EditorNetworkFileProvider> {
+        EditorNetworkFileProvider::new(self)
+    }
+}
 
 pub struct EditorNetworkFileProvider {
     input: BufReader<TcpStream>,
