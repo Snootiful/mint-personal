@@ -14,6 +14,7 @@ use self::file::PlainFileProviderConfig;
 use self::network::EditorNetworkConfig;
 
 #[derive(Debug, Default)]
+#[allow(unused)]
 pub struct FileInfo {
     pub file_exists: bool,
     pub read_only: bool,

@@ -242,6 +242,7 @@ fn write_message<W: Write>(writer: &mut W, message: &Message) -> Result<()> {
 }
 
 #[derive(Debug)]
+#[allow(unused)]
 enum Message {
     SyncFile,
     DeleteFile,
@@ -341,6 +342,7 @@ impl MessageIterateDirectoryRecursively {
 }
 
 #[derive(Debug)]
+#[allow(unused)]
 pub struct FileEntry {
     pub path: String,
     pub timestamp: u64,
