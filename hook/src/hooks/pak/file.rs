@@ -1,10 +1,11 @@
 use std::path::PathBuf;
 
 use anyhow::Result;
+use serde::Deserialize;
 
 use super::{FileInfo, FileProvider};
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, Deserialize)]
 pub struct PlainFileProviderConfig {
     path: PathBuf,
     globs: Vec<String>,

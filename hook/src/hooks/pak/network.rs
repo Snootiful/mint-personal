@@ -5,6 +5,7 @@ use std::{
 
 use anyhow::{bail, Result};
 use byteorder::{ReadBytesExt, WriteBytesExt, LE};
+use serde::Deserialize;
 
 use super::{FileInfo, FileProvider};
 
@@ -12,7 +13,7 @@ fn default_host() -> String {
     "127.0.0.1:41899".to_string()
 }
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, Deserialize)]
 pub struct EditorNetworkConfig {
     #[serde(default = "default_host")]
     host: String,

@@ -2,6 +2,7 @@ mod file;
 mod network;
 
 use anyhow::{Context, Result};
+use serde::Deserialize;
 
 use std::io::{Read, Seek, Write};
 use std::sync::{Mutex, OnceLock};
@@ -21,9 +22,9 @@ pub struct FileInfo {
     pub access_timestamp: u64,
 }
 
-#[derive(Debug, Default, serde::Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 struct FileProviderConfig {
-    layers: Vec<LayerConfig>,
+    layers: Vec<LayerConfigEntry>,
 }
 impl FileProviderConfig {
     fn new() -> Result<Self> {
@@ -37,7 +38,18 @@ impl FileProviderConfig {
     }
 }
 
-#[derive(Debug, serde::Deserialize)]
+fn return_true() -> bool {
+    true
+}
+
+#[derive(Debug, Deserialize)]
+struct LayerConfigEntry {
+    #[serde(default = "return_true")]
+    enable: bool,
+    #[serde(flatten)]
+    config: LayerConfig,
+}
+#[derive(Debug, Deserialize)]
 #[serde(tag = "type")]
 enum LayerConfig {
     File(PlainFileProviderConfig),
@@ -307,10 +319,12 @@ impl LayeredFileProvider {
         let mut layers: Vec<Box<dyn FileProvider>> = vec![];
 
         for l in config.layers {
-            layers.push(match l {
-                LayerConfig::File(c) => Box::new(PlainFileProvider::new(c)?),
-                LayerConfig::EditorNetwork(c) => Box::new(EditorNetworkFileProvider::new(c)?),
-            })
+            if l.enable {
+                layers.push(match l.config {
+                    LayerConfig::File(c) => Box::new(PlainFileProvider::new(c)?),
+                    LayerConfig::EditorNetwork(c) => Box::new(EditorNetworkFileProvider::new(c)?),
+                })
+            }
         }
 
         Ok(Self { layers })
